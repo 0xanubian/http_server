@@ -25,24 +25,24 @@ enum http_state_t {
 };
 
 struct connection_t {
-    struct sockaddr_in addr;
-    socklen_t addr_len;
-    //ssize_t recv_ret;
-    int socket_file_des;
-    //int ret;
-    int accept_fd;
+    struct      sockaddr_in addr;
+    socklen_t   addr_len;
+    int         socket_file_des;
+    int         accept_fd;
 };
 
 struct http_req_t {
-    char *header;
-    size_t remaining;
-    uint append_size;
-    uint32_t header_read_size;
-    uint32_t start_pointer_for_header_completion_scan;
-    bool header_flag;
-    long content_length;
-    int cl_count;
-    bool is_chunked;
+    char*       header;
+    char*       body_buffer;
+    long        content_length;
+    size_t      remaining;
+    uint32_t    header_read_size;
+    uint32_t    start_pointer_for_header_completion_scan;
+    uint32_t    header_end_index;
+    uint        append_size;
+    int         cl_count;
+    bool        header_flag;
+    bool        is_chunked;
 };
 
 enum http_state_t machine_state = INIT;
@@ -55,6 +55,7 @@ void is_header_complete(struct http_req_t *req) {
             (req->header)[i+3] == '\n') {
             
             req->header_flag = true;
+            req->header_end_index = i+4;
             return;
         }
     }
@@ -280,6 +281,71 @@ struct http_req_t* http_header_read(struct connection_t *connection) {
     return req;
 }
 
+void read_body(struct connection_t *connection, struct http_req_t *req) {
+    if (machine_state == READING_BODY && !(req->is_chunked)) {
+        char *body_buffer = (char*)malloc(req->content_length);
+        if (body_buffer == NULL) {
+            perror("[!] malloc failed for body...\n");
+            return;
+        }
+        req->body_buffer = body_buffer;
+        printf("\n\nReached body reading\n\n");
+            
+        size_t body_bytes_read = 0;
+        size_t total_read_size = req->content_length;
+
+        /* if leftover bytes are there */
+        uint32_t header_size = req->header_read_size;
+        uint32_t header_end_index = req->header_end_index;
+
+        void *src = (void*)req->header;
+        void *dst = (void*)req->body_buffer;
+
+        uint32_t leftover_size = header_size - header_end_index;
+            
+        /* if there are more leftover bytes than the cl then ceil the 
+         * leftover_size with cl */
+
+        //debug info
+        printf("content_length: %ld\n", total_read_size);
+        printf("body read so far: %ld\n", body_bytes_read);
+        printf("Header end index: %d\n", header_end_index);
+        //end of debug info
+ 
+        if (leftover_size > total_read_size)
+            leftover_size = total_read_size;
+
+        if (leftover_size > 0) {
+            printf("reached memcpy()\n");
+            memcpy(dst, src+header_end_index, leftover_size);
+            body_bytes_read += leftover_size;
+            printf("completed memcpy() body: %s\n\n", (char*)dst);
+        }
+
+        /* if there is more space left for the body */
+        printf("bytes read so far %ld total body size %ld\n", body_bytes_read, total_read_size);
+        while (body_bytes_read < total_read_size) {
+            printf("reached recv()s\n");
+            ssize_t ret = recv(connection->accept_fd,
+                               dst+body_bytes_read,
+                               total_read_size - body_bytes_read, 0);
+            if (ret < 0) {
+                perror("[!] recv() failed !!!");
+            }
+
+            body_bytes_read += ret;
+        printf("body: %s\n, body read so far: %ld\n", (char*)dst, body_bytes_read);
+        }
+
+        printf("\n\nbody: %s\n\n", (char*)dst);
+
+            //while (body_bytes_read < req->content_length) {
+            //    ssize_t recv_ret = recv(connection->accept_fd, body_buffer+body_bytes_read, req->content_length - body_bytes_read, 0);
+            //    body_bytes_read += recv_ret;
+            //}
+        }
+}
+
 int main(int argc, char* argv[]) {
     struct connection_t *connection = (struct connection_t*)malloc(sizeof(struct connection_t));
     if (connection == NULL) {
@@ -305,20 +371,8 @@ int main(int argc, char* argv[]) {
             continue;
         }
         
-        if (machine_state == READING_BODY && !(req->is_chunked)) {
-            char *body_buffer = (char*)malloc(req->content_length);
-            if (body_buffer == NULL) {
-                perror("[!] malloc failed for body...\n");
-                continue;
-            }
-            printf("Reached body reading\n\n");
-            break; //delete this
-            //ssize_t body_bytes_read = 0;
-            //while (body_bytes_read < req->content_length) {
-            //    ssize_t recv_ret = recv(connection->accept_fd, body_buffer+body_bytes_read, req->content_length - body_bytes_read, 0);
-            //    body_bytes_read += recv_ret;
-            //}
-        }
+        read_body(connection, req);
+        
 
         close(connection->accept_fd);
     }
